@@ -9,6 +9,10 @@ use sc_cli::SubstrateCli;
 use sc_service::PartialComponents;
 use cyferio_hub_runtime::{Block, EXISTENTIAL_DEPOSIT};
 use sp_keyring::Sr25519Keyring;
+use sp_core::offchain;
+use sp_core::offchain::StorageKind;
+use sp_io::offchain::local_storage_set;
+
 
 impl SubstrateCli for Cli {
 	fn impl_name() -> String {
@@ -173,6 +177,22 @@ pub fn run() -> sc_cli::Result<()> {
 		Some(Subcommand::ChainInfo(cmd)) => {
 			let runner = cli.create_runner(cmd)?;
 			runner.sync_run(|config| cmd.run::<Block>(&config))
+		},
+		Some(Subcommand::SetKeystore(cmd)) => {
+			let runner = cli.create_runner(cmd)?;
+			runner.sync_run(|config: sc_service::Configuration| {
+				let content = std::fs::read(&cmd.keystore_path)
+					.map_err(|e| format!("Error reading keystore file: {}", e))?;
+				
+				sp_io::offchain::local_storage_set(
+					sp_core::offchain::StorageKind::PERSISTENT,
+					b"cyferio-keystore",
+					&content
+				);
+  
+				println!("Keystore set successfully");
+				Ok(())
+			})
 		},
 		None => {
 			let runner = cli.create_runner(&cli.run)?;

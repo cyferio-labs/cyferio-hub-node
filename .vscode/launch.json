@@ -1,0 +1,103 @@
+{
+	// 使用 IntelliSense 了解相关属性。
+	// 悬停以查看现有属性的描述。
+	// 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'cyferio-hub-node'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=cyferio-hub-node",
+					"--package=cyferio-hub-node"
+				],
+				"filter": {
+					"name": "cyferio-hub-node",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}",
+			"postDebugTask": "cargo run --bin cyferio-hub-node -- --dev"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'cyferio-hub-node'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=cyferio-hub-node",
+					"--package=cyferio-hub-node"
+				],
+				"filter": {
+					"name": "cyferio-hub-node",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'cyferio_hub_runtime'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=cyferio-hub-runtime"
+				],
+				"filter": {
+					"name": "cyferio_hub_runtime",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'pallet_offchain_worker'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=pallet-offchain-worker"
+				],
+				"filter": {
+					"name": "pallet_offchain_worker",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'pallet_template'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=pallet-template"
+				],
+				"filter": {
+					"name": "pallet_template",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		}
+	]
+}

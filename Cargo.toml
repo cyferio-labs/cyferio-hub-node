@@ -8,6 +8,7 @@ edition = "2021"
 [workspace]
 members = [
     "node",
+    "pallets/offchain-worker",
     "pallets/template",
     "runtime",
 ]
@@ -16,6 +17,7 @@ resolver = "2"
 [workspace.dependencies]
 cyferio-hub-runtime = { path = "./runtime", default-features = false }
 pallet-template = { path = "./pallets/template", default-features = false }
+pallet-offchain-worker = { path = "./pallets/offchain-worker", default-features = false }
 clap = { version = "4.5.3" }
 frame-benchmarking-cli = { version = "42.0.0", default-features = false }
 frame-system = { version = "37.0.0", default-features = false }
@@ -68,7 +70,11 @@ scale-info = { version = "2.11.1", default-features = false }
 sp-genesis-builder = { version = "0.15.0", default-features = false }
 sp-offchain = { version = "34.0.0", default-features = false }
 sp-session = { version = "35.0.0", default-features = false }
+sp-keystore = { version = "0.40.0", default-features = false }
 sp-storage = { version = "21.0.0", default-features = false }
+sp-std = { version = "14.0.0", default-features = false }
 sp-transaction-pool = { version = "34.0.0", default-features = false }
 sp-version = { version = "37.0.0", default-features = false }
 substrate-wasm-builder = { version = "24.0.0", default-features = false }
+lite-json = { version = "0.2.0", default-features = false }
+log = { version = "0.4.22", default-features = false }
