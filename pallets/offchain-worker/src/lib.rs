@@ -201,19 +201,18 @@ pub mod pallet {
 		/// so the code should be able to handle that.
 		/// You can use `Local Storage` API to coordinate runs of the worker.
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
-			log::info!("Offchain worker started at block: {:?}", block_number);
+			log::info!("离线工作者在区块开始: {:?}", block_number);
 
 			let tasks = Self::tasks();
 			if !tasks.is_empty() {	
-				log::info!("Have tasks: {:?}", tasks);
-				for task in tasks.iter() {
-					log::info!("Processing task: {:?}", task);
-					if let Err(e) = Self::process_task(task) {
-						log::error!("Error processing task: {:?}", e);
+				log::info!("有任务: {:?}", tasks);
+				for (index, task) in tasks.iter().enumerate() {
+					log::info!("处理任务: {:?}", task);
+					if let Err(e) = Self::process_task(block_number, index as u32, task) {
+						log::error!("处理任务时出错: {:?}", e);
 					}
 				}
-				log::info!("All tasks processed");
-				Tasks::<T>::kill();
+				log::info!("所有任务已处理");
 			}
 		}
 	}
@@ -239,14 +238,11 @@ pub mod pallet {
 		#[pallet::weight({0})]
 		pub fn process_task_unsigned(
 			origin: OriginFor<T>,
-			_block_number: BlockNumberFor<T>,
-			task: BoundedVec<u8, T::MaxTaskSize>
+			block_number: BlockNumberFor<T>,
+			task_index: u32
 		) -> DispatchResultWithPostInfo {
-			// This ensures that the function can only be called via unsigned transaction.
 			ensure_none(origin)?;
-			// Add the price to the on-chain list, but mark it as coming from an empty address.
-			Self::process_task(&task);
-			// now increment the block number at which we expect next unsigned transaction.
+			Self::remove_task(task_index);
 			let current_block = <system::Pallet<T>>::block_number();
 			<NextUnsignedAt<T>>::put(current_block + T::UnsignedInterval::get());
 			Ok(().into())
@@ -277,9 +273,43 @@ pub mod pallet {
 	}
 
 
+	#[pallet::validate_unsigned]
+impl<T: Config> ValidateUnsigned for Pallet<T> {
+    type Call = Call<T>;
+
+    fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+        if let Call::process_task_unsigned { block_number, task_index } = call {
+            // 检查是否到了可以提交新的未签名交易的时间
+            let current_block = <system::Pallet<T>>::block_number();
+            let next_unsigned_at = <NextUnsignedAt<T>>::get();
+            if current_block < next_unsigned_at {
+                return InvalidTransaction::Stale.into();
+            }
+
+            // 检查任务是否存在
+            let tasks = Self::tasks();
+            if (*task_index as usize) >= tasks.len() {
+                return InvalidTransaction::Custom(1).into(); // 任务不存在
+            }
+
+            ValidTransaction::with_tag_prefix("ExampleOffchainWorker")
+                .priority(T::UnsignedPriority::get())
+                .and_provides((*block_number, *task_index))
+                .longevity(5)
+                .propagate(true)
+                .build()
+        } else {
+            InvalidTransaction::Call.into()
+        }
+    }
+}
+
 	#[pallet::storage]
 	#[pallet::getter(fn tasks)]
 	pub type Tasks<T: Config> = StorageValue<_, BoundedVec<BoundedVec<u8, T::MaxTaskSize>, T::MaxTasks>, ValueQuery>;
+
+	#[pallet::storage]
+	pub(super) type NextUnsignedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 }
 
 /// Payload used by this example crate to hold price
@@ -298,34 +328,37 @@ impl<T: SigningTypes> SignedPayload<T> for PricePayload<T::Public, BlockNumberFo
 }
 
 impl<T: Config> Pallet<T> {
-    fn process_task(task: &[u8]) -> Result<(), &'static str> {
-        log::info!("Processing task: {:?}", task);
+    fn process_task(
+		block_number: BlockNumberFor<T>,
+		task_index: u32, 
+		task: &[u8]
+	) -> Result<(), &'static str> {
+        log::info!("处理任务: {:?}", task);
         
         match Self::test_sui() {
             Ok(gas_price) => {
-                log::info!("Sui gas price: {:?}", gas_price);
+                log::info!("Sui gas 价格: {:?}", gas_price);
                 Self::deposit_event(Event::TaskProcessed{task: task.to_vec()});
+                
+                let call = Call::process_task_unsigned { block_number, task_index };
+
+                SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+                    .map_err(|()| "无法提交未签名交易。")?;
                 Ok(())
             },
             Err(e) => {
-                log::error!("Error fetching Sui gas price: {:?}", e);
-                Err("Failed to fetch Sui gas price")
+                log::error!("获取 Sui gas 价格时出错: {:?}", e);
+                Err("获取 Sui gas 价格失败")
             }
         }
+    }
 
-		let call = Call::submit_price_unsigned { block_number, price };
-
-		// Now let's create a transaction out of this call and submit it to the pool.
-		// Here we showcase two ways to send an unsigned transaction / unsigned payload (raw)
-		//
-		// By default unsigned transactions are disallowed, so we need to whitelist this case
-		// by writing `UnsignedValidator`. Note that it's EXTREMELY important to carefully
-		// implement unsigned validation logic, as any mistakes can lead to opening DoS or spam
-		// attack vectors. See validation logic docs for more details.
-		//
-		SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
-			.map_err(|()| "Unable to submit unsigned transaction.")?;
-		Ok(())
+    fn remove_task(task_index: u32) {
+        Tasks::<T>::mutate(|tasks| {
+            if (task_index as usize) < tasks.len() {
+                tasks.remove(task_index as usize);
+            }
+        });
     }
 
 	fn test_sui() -> Result<u32, http::Error> {
