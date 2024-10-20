@@ -265,7 +265,7 @@ impl pallet_offchain_worker::Config for Runtime {
 	type GracePeriod = ConstU32<5>;
 	type UnsignedInterval = ConstU32<2>;
 	type UnsignedPriority = UnsignedPriority;
-	type MaxTaskSize = ConstU32<1024>;
+	type StringLimit = ConstU32<1024>;
 	type MaxTasks = ConstU32<64>;
 }
 

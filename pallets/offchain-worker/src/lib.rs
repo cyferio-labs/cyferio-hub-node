@@ -47,9 +47,12 @@
 
 extern crate alloc;
 
+use alloc::format;
 use codec::{Decode, Encode};
-use frame_support::BoundedVec;
-use frame_support::traits::Get;
+use frame_support::{
+	pallet_prelude::{BoundedVec, MaxEncodedLen},
+	traits::Get,
+};
 use frame_system::{
 	self as system,
 	offchain::{
@@ -79,9 +82,19 @@ use sp_std::vec;
 use serde::Deserialize;
 use serde_json::Value;
 use scale_info::prelude::string::String;
+use scale_info::TypeInfo;
+use sp_std::fmt::Debug;
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default, TypeInfo, MaxEncodedLen)]
+#[scale_info(skip_type_params(StringLimit))]
+pub struct Task<StringLimit: Get<u32> + Clone> {
+	pub da_height: u64,
+	pub blob: BoundedVec<u8, StringLimit>,
+	pub processed: bool,
+}
 
 /// Defines application identifier for crypto keys of this module.
 ///
@@ -128,19 +141,31 @@ pub use pallet::*;
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ResponseData {
-	is_succ: bool,
-	res: TimeData
+    is_succ: bool,
+    #[serde(default)]
+    res: Option<TimeData>,
+    #[serde(default)]
+    err: Option<ErrorData>,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
 struct TimeData {
-	time: String,
+    time: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct ErrorData {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: String,
+    code: String,
 }
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
+	use super::Task;
+
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
 
@@ -177,10 +202,9 @@ pub mod pallet {
 		#[pallet::constant]
 		type UnsignedPriority: Get<TransactionPriority>;
 
-
 		/// Maximum size of a task.
 		#[pallet::constant]
-		type MaxTaskSize: Get<u32>;
+		type StringLimit: Get<u32> + Clone;
 
 		/// Maximum number of tasks.
 		#[pallet::constant]
@@ -189,7 +213,6 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
-
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -203,18 +226,20 @@ pub mod pallet {
 		/// so the code should be able to handle that.
 		/// You can use `Local Storage` API to coordinate runs of the worker.
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
-			log::info!("离线工作者在区块开始: {:?}", block_number);
+			log::info!("Offchain worker started at block: {:?}", block_number);
 
 			let tasks = Self::tasks();
 			if !tasks.is_empty() {	
-				log::info!("有任务: {:?}", tasks);
+				log::info!("Number of tasks: {:?}", tasks.len());
 				for (index, task) in tasks.iter().enumerate() {
-					log::info!("处理任务: {:?}", task);
-					if let Err(e) = Self::process_task(block_number, index as u32, task) {
-						log::error!("处理任务时出错: {:?}", e);
+					if !task.processed {
+						log::info!("Processing task: {:?}", task.blob.clone());
+						if let Err(e) = Self::process_task(block_number, index as u32, task) {
+							log::error!("Error processing task: {:?}", e);
+						}
 					}
 				}
-				log::info!("所有任务已处理");
+				log::info!("All tasks processed");
 			}
 		}
 	}
@@ -224,94 +249,118 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
 		#[pallet::weight({0})]
-		pub fn submit_task(origin: OriginFor<T>, task: BoundedVec<u8, T::MaxTaskSize>) -> DispatchResult {
+		pub fn submit_task(origin: OriginFor<T>, da_height: u64, blob: Vec<u8>) -> DispatchResult {
 			ensure_signed(origin)?;
 
+			let last_height = Self::last_da_height();
+			ensure!(da_height > last_height, Error::<T>::InvalidDaHeight);
+
+			let bounded_blob: BoundedVec<u8, T::StringLimit> =
+			blob.clone().try_into().map_err(|_| Error::<T>::BlobTooLong)?;
+
+			let new_task = super::Task {
+				da_height,
+				blob: bounded_blob.clone(),
+				processed: false,
+			};
+
 			Tasks::<T>::try_mutate(|tasks| {
-				tasks.try_push(task.clone())
+				tasks.try_push(new_task.clone())
 					.map_err(|_| Error::<T>::TooManyTasks)
 			})?;
+
+			TaskHistory::<T>::insert(da_height, (bounded_blob, false));
 			
-			Self::deposit_event(Event::TaskSubmitted{task: task.to_vec()});
+			// 更新最后提交的 da_height
+			LastDaHeight::<T>::put(da_height);
+
+			Self::deposit_event(Event::TaskSubmitted { da_height: new_task.da_height, blob: new_task.blob });
 			Ok(())
-        }
+		}
 
 		#[pallet::call_index(1)]
 		#[pallet::weight({0})]
 		pub fn process_task_unsigned(
 			origin: OriginFor<T>,
 			block_number: BlockNumberFor<T>,
-			task_index: u32
+			task_index: u32,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
 			Self::remove_task(task_index);
 			let current_block = <system::Pallet<T>>::block_number();
+
 			<NextUnsignedAt<T>>::put(current_block + T::UnsignedInterval::get());
 			Ok(().into())
 		}
-
-		// #[pallet::call_index(1)]
-		// #[pallet::weight({0})]
-		// pub fn process_task(origin: OriginFor<T>, task: BoundedVec<u8, T::MaxTaskSize>) -> DispatchResult {
-		// 	ensure_signed(origin)?;
-		// 	Self::process_task(&task);
-		// 	Ok(())
-		// }
 	}
 
 	/// Events for the pallet.
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-        TaskSubmitted{task: Vec<u8>},
-        TaskProcessed{task: Vec<u8>},
+        TaskSubmitted{da_height: u64, blob: BoundedVec<u8, T::StringLimit>},
+        TaskProcessed{da_height: u64, blob: BoundedVec<u8, T::StringLimit>},
 	}
-
-
 
 	#[pallet::error]
 	pub enum Error<T> {
 		TooManyTasks,
+		DaHeightTooLong,
+		BlobTooLong,
+		InvalidDaHeight,
 	}
 
-
 	#[pallet::validate_unsigned]
-impl<T: Config> ValidateUnsigned for Pallet<T> {
-    type Call = Call<T>;
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
 
-    fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-        if let Call::process_task_unsigned { block_number, task_index } = call {
-            // 检查是否到了可以提交新的未签名交易的时间
-            let current_block = <system::Pallet<T>>::block_number();
-            let next_unsigned_at = <NextUnsignedAt<T>>::get();
-            if current_block < next_unsigned_at {
-                return InvalidTransaction::Stale.into();
-            }
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			if let Call::process_task_unsigned { block_number, task_index } = call {
+				// Check if it's time to submit a new unsigned transaction
+				let current_block = <system::Pallet<T>>::block_number();
+				let next_unsigned_at = <NextUnsignedAt<T>>::get();
+				if current_block < next_unsigned_at {
+					return InvalidTransaction::Stale.into();
+				}
 
-            // 检查任务是否存在
-            let tasks = Self::tasks();
-            if (*task_index as usize) >= tasks.len() {
-                return InvalidTransaction::Custom(1).into(); // 任务不存在
-            }
+				// Check if the task exists
+				let tasks = Self::tasks();
+				if (*task_index as usize) >= tasks.len() {
+					return InvalidTransaction::Custom(1).into(); // Task doesn't exist
+				}
 
-            ValidTransaction::with_tag_prefix("ExampleOffchainWorker")
-                .priority(T::UnsignedPriority::get())
-                .and_provides((*block_number, *task_index))
-                .longevity(5)
-                .propagate(true)
-                .build()
-        } else {
-            InvalidTransaction::Call.into()
-        }
-    }
-}
+				ValidTransaction::with_tag_prefix("ExampleOffchainWorker")
+					.priority(T::UnsignedPriority::get())
+					.and_provides((*block_number, *task_index))
+					.longevity(5)
+					.propagate(true)
+					.build()
+			} else {
+				InvalidTransaction::Call.into()
+			}
+		}
+	}
 
 	#[pallet::storage]
 	#[pallet::getter(fn tasks)]
-	pub type Tasks<T: Config> = StorageValue<_, BoundedVec<BoundedVec<u8, T::MaxTaskSize>, T::MaxTasks>, ValueQuery>;
+	pub type Tasks<T: Config> = StorageValue<_, BoundedVec<Task<T::StringLimit>, T::MaxTasks>, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn task_by_height)]
+	pub type TaskHistory<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		u64,  // da_height as key
+		(BoundedVec<u8, T::StringLimit>, bool),  // (blob, processed) as value
+		ValueQuery
+	>;
 
 	#[pallet::storage]
 	pub(super) type NextUnsignedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn last_da_height)]
+	pub type LastDaHeight<T: Config> = StorageValue<_, u64, ValueQuery>;
 }
 
 /// Payload used by this example crate to hold price
@@ -333,69 +382,68 @@ impl<T: Config> Pallet<T> {
     fn process_task(
 		block_number: BlockNumberFor<T>,
 		task_index: u32, 
-		task: &[u8]
+		task: &Task<T::StringLimit>
 	) -> Result<(), &'static str> {
-        log::info!("处理任务: {:?}", task);
+        log::info!("Processing task: {:?}", task.blob.clone());
         
-        match Self::test_sui() {
+        match Self::test_sui(task.da_height, task.blob.clone()) {
             Ok(gas_price) => {
-                log::info!("Sui gas 价格: {:?}", gas_price);
-                Self::deposit_event(Event::TaskProcessed{task: task.to_vec()});
+                log::info!("Sui gas price: {:?}", gas_price);
+                
+                // Update task status
+                Tasks::<T>::mutate(|tasks| {
+                    if let Some(task) = tasks.get_mut(task_index as usize) {
+                        task.processed = true;
+                    }
+                });
+
+                Self::deposit_event(Event::TaskProcessed { da_height: task.da_height, blob: task.blob.clone() });
                 
                 let call = Call::process_task_unsigned { block_number, task_index };
 
                 SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
-                    .map_err(|()| "无法提交未签名交易。")?;
+                    .map_err(|()| "Unable to submit unsigned transaction")?;
                 Ok(())
             },
             Err(e) => {
-                log::error!("获取 Sui gas 价格时出错: {:?}", e);
-                Err("获取 Sui gas 价格失败")
+                log::error!("Error getting Sui gas price: {:?}", e);
+                Err("Failed to get Sui gas price")
             }
         }
     }
 
     fn remove_task(task_index: u32) {
+        let mut da_height = None;
         Tasks::<T>::mutate(|tasks| {
             if (task_index as usize) < tasks.len() {
+                if let Some(task) = tasks.get(task_index as usize) {
+                    da_height = Some(task.da_height);
+                }
                 tasks.remove(task_index as usize);
             }
         });
+
+        if let Some(height) = da_height {
+            // Update processing status
+            TaskHistory::<T>::mutate(height, |task| {
+                let (blob, _) = task;
+                *task = (blob.clone(), true);
+            });
+        }
     }
 
 	fn fetch_price() -> Result<u32, http::Error> {
 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
-		// Initiate an external HTTP GET request.
-		// This is using high-level wrappers from `sp_runtime`, for the low-level calls that
-		// you can find in `sp_io`. The API is trying to be similar to `request`, but
-		// since we are running in a custom WASM execution environment we can't simply
-		// import the library here.
 		let request =
 			http::Request::get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
-		// We set the deadline for sending of the request, note that awaiting response can
-		// have a separate deadline. Next we send the request, before that it's also possible
-		// to alter request headers or stream body content in case of non-GET requests.
 		let pending = request.deadline(deadline).send().map_err(|_| http::Error::IoError)?;
-
-		// The request is already being processed by the host, we are free to do anything
-		// else in the worker (we can send multiple concurrent requests too).
-		// At some point however we probably want to check the response though,
-		// so we can block current thread and wait for it to finish.
-		// Note that since the request is being driven by the host, we don't have to wait
-		// for the request to have it complete, we will just not read the response.
 		let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
-		// Let's check the status code before we proceed to reading the response.
 		if response.code != 200 {
 			log::warn!("Unexpected status code: {}", response.code);
 			return Err(http::Error::Unknown)
 		}
 
-		// Next we want to fully read the response body and collect it to a vector of bytes.
-		// Note that the return object allows you to read the body in chunks as well
-		// with a way to control the deadline.
 		let body = response.body().collect::<Vec<u8>>();
-
-		// Create a str slice from the body.
 		let body_str = alloc::str::from_utf8(&body).map_err(|_| {
 			log::warn!("No UTF8 body");
 			http::Error::Unknown
@@ -412,70 +460,24 @@ impl<T: Config> Pallet<T> {
 		log::warn!("Got price: {} cents", price);
 
 		Ok(price)
-
-		// let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000)); // 增加到 10 秒
-		// // let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000)); // 增加到 5 秒
-		// let url = "https://graphql-beta.mainnet.sui.io";
-		// let request_body = r#"{"query": "query { epoch { referenceGasPrice } }"}"#;
-		// log::info!("Preparing to send request to {}", url);
-		// let request = http::Request::post(url, vec![request_body.clone()])
-		// .add_header("Content-Type", "application/json");
-		// let pending = request
-		// .deadline(deadline)
-		// .send()
-		// .map_err(|e| {
-		// 	log::debug!("发送请求失败: {:?}", e);
-		// 	http::Error::IoError
-		// })?;
-		// log::info!("Request sent, waiting for response");
-		// let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
-		// log::info!("Response received with status code: {}", response.code);
-		// if response.code != 200 {
-		// 	log::debug!("Unexpected status code: {}", response.code);
-		// 	return Err(http::Error::Unknown)
-		// }
-
-		// let body = response.body().collect::<Vec<u8>>();
-		// log::info!("5");
-		// let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-		// 	log::warn!("No UTF8 body");
-		// 	http::Error::Unknown
-		// })?;
-		// let response_json: Value = serde_json::from_str(body_str).map_err(|err| {
-		// 	log::warn!("Error parsing response body as JSON 1 : {}", err);
-		// 	http::Error::Unknown
-		// })?;
-		// let response_data: ResponseData = serde_json::from_value(response_json["data"].clone()).map_err(|err| {
-		// 	log::warn!("Error parsing response body as JSON 2: {}", err);
-		// 	http::Error::Unknown
-		// })?;
-		// log::info!("Info from Sui response_data: {:?}",response_data);
-		// log::info!("8");
-		// let reference_gas_price = response_data.epoch.reference_gas_price;
-		// log::info!("Info from Sui reference_gas_price: {:?}",reference_gas_price);
-		// log::info!("9");
-		// // let reference_gas_price:&str = match response_data.epoch.referenceGasPrice {
-		// // 	Some(reference_gas_price) => Ok(reference_gas_price),
-		// // 	None => {
-		// // 		log::warn!("Unable to extract price from the response: {:?}", body_str);
-		// // 		Err(http::Error::Unknown)
-		// // 	},
-		// // }?;
-
-		// log::info!("Info from Sui: {:?}",reference_gas_price);
-		// log::info!("Current Gas price: {:?}",reference_gas_price);
-		// Ok(reference_gas_price)
-		// // Ok(())
 	}
 
-
-
-	fn test_sui() -> Result<u32, http::Error> {
+	fn test_sui(da_height: u64, blob: BoundedVec<u8, T::StringLimit>) -> Result<u32, http::Error> {
 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 		let url = "http://47.236.78.251:3000/v1/Warlus/Store";
-		let request_body = r#"{ "blob": "1" }"#;
-		log::info!("准备发送请求到 {}", url);
 		
+		let blob_str = sp_std::str::from_utf8(&blob).map_err(|_| {
+			log::error!("Unable to convert blob to string");
+			http::Error::Unknown
+		})?;
+		
+		let request_body = format!(
+			r#"{{"da_height": {}, "blob": "{}", "epochs": 1}}"#,
+			da_height, blob_str
+		);
+		
+		log::info!("Preparing to send request to {}", url);
+		log::info!("Request body: {}", request_body);
 		let request = http::Request::post(url, vec![request_body])
 			.add_header("Content-Type", "application/json");
 		
@@ -483,97 +485,50 @@ impl<T: Config> Pallet<T> {
 			.deadline(deadline)
 			.send()
 			.map_err(|e| {
-				log::error!("发送请求失败: {:?}", e);
+				log::error!("Failed to send request: {:?}", e);
 				http::Error::IoError
 			})?;
 		
-		log::info!("请求已发送，等待响应");
+		log::info!("Request sent, waiting for response");
 		let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
-		log::info!("收到响应，状态码: {}", response.code);
+		log::info!("Response received, status code: {}", response.code);
 		
 		if response.code != 200 {
-			log::error!("意外的状态码: {}", response.code);
+			log::error!("Unexpected status code: {}", response.code);
 			return Err(http::Error::Unknown);
 		}
 	
 		let body = response.body().collect::<Vec<u8>>();
 		let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-			log::error!("响应体不是有效的UTF-8");
+			log::error!("Response body is not valid UTF-8");
 			http::Error::Unknown
 		})?;
 	
-		log::info!("收到的响应体: {}", body_str);
+		log::info!("Received response body: {}", body_str);
 	
 		let response_json: ResponseData = serde_json::from_str(body_str).map_err(|err| {
-			log::error!("解析JSON响应失败: {}", err);
+			log::error!("Failed to parse JSON response: {}", err);
 			http::Error::Unknown
 		})?;
 	
-		log::info!("解析后的JSON: {:?}", response_json);
+		log::info!("Parsed JSON: {:?}", response_json);
 	
-		// 假设响应结构为 { "data": { "res": { "time": "..." } } }
-		let time =response_json.res.time;
-		log::info!("从Sui获取的时间: {}", time);
+		if !response_json.is_succ {
+			if let Some(err) = response_json.err {
+				log::error!("Error from server: {:?}", err);
+			}
+			return Err(http::Error::Unknown);
+		}
+
+		let time = response_json.res.ok_or_else(|| {
+			log::error!("Missing 'res' field in successful response");
+			http::Error::Unknown
+		})?.time;
+
+		log::info!("Time retrieved from Sui: {}", time);
 	
-		// 这里您可以根据需要处理时间字符串
-		// 例如，可以将其转换为时间戳或其他格式
-	
-		Ok(1u32) // 返回一个固定值，您可以根据实际需求修改
+		Ok(1u32) // Return a fixed value, you can modify this based on your actual requirements
 	}
-
-	// fn test_sui() -> Result<u32, http::Error> {
-	// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000)); // 增加到 10 秒
-	// 	// let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000)); // 增加到 5 秒
-	// 	let url = "http://47.236.78.251:3000/v1/Warlus/Store";
-	// 	let request_body = r#"{ "blob": "1" }"#;
-	// 	log::info!("Preparing to send request to {}", url);
-	// 	let request = http::Request::post(url, vec![request_body.clone()])
-	// 	.add_header("Content-Type", "application/json");
-	// 	let pending = request
-	// 	.deadline(deadline)
-	// 	.send()
-	// 	.map_err(|e| {
-	// 		log::debug!("发送请求失败: {:?}", e);
-	// 		http::Error::IoError
-	// 	})?;
-	// 	log::info!("Request sent, waiting for response");
-	// 	let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
-	// 	log::info!("Response received with status code: {}", response.code);
-	// 	if response.code != 200 {
-	// 		log::debug!("Unexpected status code: {}", response.code);
-	// 		return Err(http::Error::Unknown)
-	// 	}
-
-	// 	let body = response.body().collect::<Vec<u8>>();
-	// 	log::info!("5");
-	// 	let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-	// 		log::warn!("No UTF8 body");
-	// 		http::Error::Unknown
-	// 	})?;
-	// 	let response_json: Value = serde_json::from_str(body_str).map_err(|err| {
-	// 		log::warn!("Error parsing response body as JSON 1 : {}", err);
-	// 		http::Error::Unknown
-	// 	})?;
-	// 	let response_data: ResponseData = serde_json::from_value(response_json["data"].clone()).map_err(|err| {
-	// 		log::warn!("Error parsing response body as JSON 2: {}", err);
-	// 		http::Error::Unknown
-	// 	})?;
-	// 	log::info!("Info from Sui response_data: {:?}",response_data);
-	// 	log::info!("8");
-	// 	let time = response_data.res.time;
-	// 	log::info!("Info from Sui time: {:?}",time);
-	// 	log::info!("9");
-	// 	// let reference_gas_price:&str = match response_data.epoch.referenceGasPrice {
-	// 	// 	Some(reference_gas_price) => Ok(reference_gas_price),
-	// 	// 	None => {
-	// 	// 		log::warn!("Unable to extract price from the response: {:?}", body_str);
-	// 	// 		Err(http::Error::Unknown)
-	// 	// 	},
-	// 	// }?;
-
-	// 	// Ok(reference_gas_price)
-	// 	Ok(1u32)
-	// }
 		
 	/// Parse the price from the given JSON string using `lite-json`.
 	/// Returns `None` when parsing failed or `Some(price in cents)` when parsing is successful.
@@ -594,3 +549,4 @@ impl<T: Config> Pallet<T> {
 		Some(price.integer as u32 * 100 + (price.fraction / 10_u64.pow(exp)) as u32)
 	}
 }
+
