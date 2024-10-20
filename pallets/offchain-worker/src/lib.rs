@@ -126,14 +126,16 @@ pub mod crypto {
 pub use pallet::*;
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct ResponseData {
-	epoch: EpochData,
+	is_succ: bool,
+	res: TimeData
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct EpochData {
-	reference_gas_price: String,
+struct TimeData {
+	time: String,
 }
 
 #[frame_support::pallet]
@@ -361,7 +363,7 @@ impl<T: Config> Pallet<T> {
         });
     }
 
-	fn test_sui() -> Result<u32, http::Error> {
+	fn fetch_price() -> Result<u32, http::Error> {
 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 		// Initiate an external HTTP GET request.
 		// This is using high-level wrappers from `sp_runtime`, for the low-level calls that
@@ -465,8 +467,115 @@ impl<T: Config> Pallet<T> {
 		// Ok(reference_gas_price)
 		// // Ok(())
 	}
-		/// Parse the price from the given JSON string using `lite-json`.
-	///
+
+
+
+	fn test_sui() -> Result<u32, http::Error> {
+		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+		let url = "http://47.236.78.251:3000/v1/Warlus/Store";
+		let request_body = r#"{ "blob": "1" }"#;
+		log::info!("准备发送请求到 {}", url);
+		
+		let request = http::Request::post(url, vec![request_body])
+			.add_header("Content-Type", "application/json");
+		
+		let pending = request
+			.deadline(deadline)
+			.send()
+			.map_err(|e| {
+				log::error!("发送请求失败: {:?}", e);
+				http::Error::IoError
+			})?;
+		
+		log::info!("请求已发送，等待响应");
+		let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
+		log::info!("收到响应，状态码: {}", response.code);
+		
+		if response.code != 200 {
+			log::error!("意外的状态码: {}", response.code);
+			return Err(http::Error::Unknown);
+		}
+	
+		let body = response.body().collect::<Vec<u8>>();
+		let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+			log::error!("响应体不是有效的UTF-8");
+			http::Error::Unknown
+		})?;
+	
+		log::info!("收到的响应体: {}", body_str);
+	
+		let response_json: ResponseData = serde_json::from_str(body_str).map_err(|err| {
+			log::error!("解析JSON响应失败: {}", err);
+			http::Error::Unknown
+		})?;
+	
+		log::info!("解析后的JSON: {:?}", response_json);
+	
+		// 假设响应结构为 { "data": { "res": { "time": "..." } } }
+		let time =response_json.res.time;
+		log::info!("从Sui获取的时间: {}", time);
+	
+		// 这里您可以根据需要处理时间字符串
+		// 例如，可以将其转换为时间戳或其他格式
+	
+		Ok(1u32) // 返回一个固定值，您可以根据实际需求修改
+	}
+
+	// fn test_sui() -> Result<u32, http::Error> {
+	// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000)); // 增加到 10 秒
+	// 	// let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000)); // 增加到 5 秒
+	// 	let url = "http://47.236.78.251:3000/v1/Warlus/Store";
+	// 	let request_body = r#"{ "blob": "1" }"#;
+	// 	log::info!("Preparing to send request to {}", url);
+	// 	let request = http::Request::post(url, vec![request_body.clone()])
+	// 	.add_header("Content-Type", "application/json");
+	// 	let pending = request
+	// 	.deadline(deadline)
+	// 	.send()
+	// 	.map_err(|e| {
+	// 		log::debug!("发送请求失败: {:?}", e);
+	// 		http::Error::IoError
+	// 	})?;
+	// 	log::info!("Request sent, waiting for response");
+	// 	let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
+	// 	log::info!("Response received with status code: {}", response.code);
+	// 	if response.code != 200 {
+	// 		log::debug!("Unexpected status code: {}", response.code);
+	// 		return Err(http::Error::Unknown)
+	// 	}
+
+	// 	let body = response.body().collect::<Vec<u8>>();
+	// 	log::info!("5");
+	// 	let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+	// 		log::warn!("No UTF8 body");
+	// 		http::Error::Unknown
+	// 	})?;
+	// 	let response_json: Value = serde_json::from_str(body_str).map_err(|err| {
+	// 		log::warn!("Error parsing response body as JSON 1 : {}", err);
+	// 		http::Error::Unknown
+	// 	})?;
+	// 	let response_data: ResponseData = serde_json::from_value(response_json["data"].clone()).map_err(|err| {
+	// 		log::warn!("Error parsing response body as JSON 2: {}", err);
+	// 		http::Error::Unknown
+	// 	})?;
+	// 	log::info!("Info from Sui response_data: {:?}",response_data);
+	// 	log::info!("8");
+	// 	let time = response_data.res.time;
+	// 	log::info!("Info from Sui time: {:?}",time);
+	// 	log::info!("9");
+	// 	// let reference_gas_price:&str = match response_data.epoch.referenceGasPrice {
+	// 	// 	Some(reference_gas_price) => Ok(reference_gas_price),
+	// 	// 	None => {
+	// 	// 		log::warn!("Unable to extract price from the response: {:?}", body_str);
+	// 	// 		Err(http::Error::Unknown)
+	// 	// 	},
+	// 	// }?;
+
+	// 	// Ok(reference_gas_price)
+	// 	Ok(1u32)
+	// }
+		
+	/// Parse the price from the given JSON string using `lite-json`.
 	/// Returns `None` when parsing failed or `Some(price in cents)` when parsing is successful.
 	fn parse_price(price_str: &str) -> Option<u32> {
 		let val = lite_json::parse_json(price_str);
