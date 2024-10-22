@@ -9,14 +9,12 @@ edition = "2021"
 members = [
     "node",
     "pallets/offchain-worker",
-    "pallets/template",
     "runtime",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 cyferio-hub-runtime = { path = "./runtime", default-features = false }
-pallet-template = { path = "./pallets/template", default-features = false }
 pallet-offchain-worker = { path = "./pallets/offchain-worker", default-features = false }
 clap = { version = "4.5.3" }
 frame-benchmarking-cli = { version = "42.0.0", default-features = false }
