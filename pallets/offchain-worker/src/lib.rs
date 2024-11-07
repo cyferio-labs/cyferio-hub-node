@@ -124,21 +124,21 @@ pub mod crypto {
 
 pub use pallet::*;
 
-/// Struct to deserialize the response from the Sui API
+/// Struct to deserialize the response from the Babylon API
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ResponseData {
     is_succ: bool,
     #[serde(default)]
-    res: Option<SuiData>,
+    res: Option<BabylonData>,
     #[serde(default)]
     err: Option<ErrorData>,
 }
 
-/// Struct to hold Sui-specific data
+/// Struct to hold Babylon-specific data
 #[derive(Deserialize, Debug)]
-struct SuiData {
-    sui_digest: String,
+struct BabylonData {
+    babylon_digest: String,
     time: String,
 }
 
@@ -262,13 +262,13 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			block_number: BlockNumberFor<T>,
 			task_index: u32,
-			sui_digest: Vec<u8>,
+			babylon_digest: Vec<u8>,
 			time: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
 
-			let bounded_sui_digest: BoundedVec<u8, T::StringLimit> = 
-				sui_digest.try_into().map_err(|_| Error::<T>::DigestTooLong)?;
+			let bounded_babylon_digest: BoundedVec<u8, T::StringLimit> = 
+				babylon_digest.try_into().map_err(|_| Error::<T>::DigestTooLong)?;
 			let bounded_time: BoundedVec<u8, T::StringLimit> = 
 				time.try_into().map_err(|_| Error::<T>::TimeTooLong)?;
 
@@ -277,13 +277,13 @@ pub mod pallet {
 					task.processed = true;
 					TaskHistory::<T>::insert(
 						task.da_height,
-						(task.blob.clone(), true, Some(bounded_sui_digest.clone()), Some(bounded_time.clone()))
+						(task.blob.clone(), true, Some(bounded_babylon_digest.clone()), Some(bounded_time.clone()))
 					);
 
 					Self::deposit_event(Event::TaskProcessed { 
 						da_height: task.da_height, 
 						blob: task.blob.clone(),
-						sui_digest: Some(bounded_sui_digest),
+						babylon_digest: Some(bounded_babylon_digest),
 						time: Some(bounded_time)
 					});
 				}
@@ -308,7 +308,7 @@ pub mod pallet {
         TaskProcessed{
             da_height: u64, 
             blob: BoundedVec<u8, T::StringLimit>,
-            sui_digest: Option<BoundedVec<u8, T::StringLimit>>,
+            babylon_digest: Option<BoundedVec<u8, T::StringLimit>>,
             time: Option<BoundedVec<u8, T::StringLimit>>
         },
 	}
@@ -336,7 +336,7 @@ pub mod pallet {
 		type Call = Call<T>;
 
 		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			if let Call::process_task_unsigned { block_number, task_index, sui_digest: _, time: _ } = call {
+			if let Call::process_task_unsigned { block_number, task_index, babylon_digest: _, time: _ } = call {
 				// Check if it's time to submit a new unsigned transaction
 				let current_block = <system::Pallet<T>>::block_number();
 				let next_unsigned_at = <NextUnsignedAt<T>>::get();
@@ -374,7 +374,7 @@ pub mod pallet {
 		_,
 		Blake2_128Concat,
 		u64,  // da_height as key
-		(BoundedVec<u8, T::StringLimit>, bool, Option<BoundedVec<u8, T::StringLimit>>, Option<BoundedVec<u8, T::StringLimit>>),  // (blob, processed, sui_digest, time) as value
+		(BoundedVec<u8, T::StringLimit>, bool, Option<BoundedVec<u8, T::StringLimit>>, Option<BoundedVec<u8, T::StringLimit>>),  // (blob, processed, babylon_digest, time) as value
 		ValueQuery
 	>;
 
@@ -403,7 +403,7 @@ impl<T: SigningTypes> SignedPayload<T> for PricePayload<T::Public, BlockNumberFo
 }
 
 impl<T: Config> Pallet<T> {
-    /// Process a task by fetching Sui data and submitting an unsigned transaction.
+    /// Process a task by fetching Babylon data and submitting an unsigned transaction.
     fn process_task(
 		block_number: BlockNumberFor<T>,
 		task_index: u32, 
@@ -411,15 +411,15 @@ impl<T: Config> Pallet<T> {
 	) -> Result<(), &'static str> {
         log::info!("Processing task: {:?}", task.blob.clone());
         
-        match Self::fetch_sui_data(task.da_height, task.blob.clone()) {
-            Ok((sui_digest, time)) => {
-                log::info!("Sui digest: {:?}, Time: {:?}", sui_digest, time);
+        match Self::fetch_babylon_data(task.da_height, task.blob.clone()) {
+            Ok((babylon_digest, time)) => {
+                log::info!("Babylon digest: {:?}, Time: {:?}", babylon_digest, time);
                 
-                // Submit unsigned transaction with sui_digest and time
+                // Submit unsigned transaction with babylon_digest and time
                 let call = Call::process_task_unsigned { 
                     block_number, 
                     task_index,
-                    sui_digest: sui_digest.into_bytes(),
+                    babylon_digest: babylon_digest.into_bytes(),
                     time: time.into_bytes(),
                 };
 
@@ -429,8 +429,8 @@ impl<T: Config> Pallet<T> {
                 Ok(())
             },
             Err(e) => {
-                log::error!("Error getting Sui data: {:?}", e);
-                Err("Failed to get Sui data")
+                log::error!("Error getting Babylon data: {:?}", e);
+                Err("Failed to get Babylon data")
             }
         }
     }
@@ -450,13 +450,13 @@ impl<T: Config> Pallet<T> {
         if let Some(height) = da_height {
             // Update processing status in task history
             TaskHistory::<T>::mutate(height, |task| {
-                let (blob, _, sui_digest, time) = task;
-                *task = (blob.clone(), true, sui_digest.clone(), time.clone());
+                let (blob, _, babylon_digest, time) = task;
+                *task = (blob.clone(), true, babylon_digest.clone(), time.clone());
             });
         }
     }
-	/// Test the Sui API by sending a request with task data.
-	fn fetch_sui_data(da_height: u64, blob: BoundedVec<u8, T::StringLimit>) -> Result<(String, String), http::Error> {
+	/// Test the Babylon API by sending a request with task data.
+	fn fetch_babylon_data(da_height: u64, blob: BoundedVec<u8, T::StringLimit>) -> Result<(String, String), http::Error> {
 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 		let url = "http://47.236.78.251:3000/v1/Warlus/Store";
 		
@@ -514,13 +514,13 @@ impl<T: Config> Pallet<T> {
 			return Err(http::Error::Unknown);
 		}
 
-		let sui_data = response_json.res.ok_or_else(|| {
+		let babylon_data = response_json.res.ok_or_else(|| {
 			log::error!("Missing 'res' field in successful response");
 			http::Error::Unknown
 		})?;
 
-		log::info!("Sui digest: {}, Time: {}", sui_data.sui_digest, sui_data.time);
+		log::info!("Babylon digest: {}, Time: {}", babylon_data.babylon_digest, babylon_data.time);
 
-		Ok((sui_data.sui_digest, sui_data.time))
+		Ok((babylon_data.babylon_digest, babylon_data.time))
 	}
 }
