@@ -457,23 +457,26 @@ impl<T: Config> Pallet<T> {
     }
 	/// Test the Babylon API by sending a request with task data.
 	fn fetch_babylon_data(da_height: u64, blob: BoundedVec<u8, T::StringLimit>) -> Result<(String, String), http::Error> {
-		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
-		let url = "http://47.236.78.251:3000/v1/Warlus/Store";
+		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(8_000));
+		let url = "https://babylon-rest.cyferio.com/v1/Babylon/DaManager";
 		
-		let blob_str = sp_std::str::from_utf8(&blob).map_err(|_| {
-			log::error!("Unable to convert blob to string");
+		let blob_str = sp_std::str::from_utf8(&blob).map_err(|e| {
+			log::error!("Unable to convert blob to string: {:?}", e);
 			http::Error::Unknown
 		})?;
 		
 		let request_body = format!(
-			r#"{{"da_height": "{}", "blob": "{}", "epochs": 1}}"#,
+			r#"{{ "da_height": "{}", "blob": "{}" }}"#,
 			da_height, blob_str
 		);
 		
 		log::info!("Preparing to send request to {}", url);
 		log::info!("Request body: {}", request_body);
+		
 		let request = http::Request::post(url, vec![request_body])
 			.add_header("Content-Type", "application/json");
+		
+		log::info!("Sending request...");
 		
 		let pending = request
 			.deadline(deadline)
@@ -483,30 +486,30 @@ impl<T: Config> Pallet<T> {
 				http::Error::IoError
 			})?;
 		
-		log::info!("Request sent, waiting for response");
-		let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
-		log::info!("Response received, status code: {}", response.code);
+		log::info!("Request sent, waiting for response...");
 		
-		if response.code != 200 {
-			log::error!("Unexpected status code: {}", response.code);
-			return Err(http::Error::Unknown);
-		}
-	
+		let response = pending.try_wait(deadline).map_err(|e| {
+			log::error!("Failed to get response: {:?}", e);
+			http::Error::DeadlineReached
+		})??;
+		
+		log::info!("Response received, status code: {}", response.code);
+
 		let body = response.body().collect::<Vec<u8>>();
-		let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-			log::error!("Response body is not valid UTF-8");
+		let body_str = sp_std::str::from_utf8(&body).map_err(|e| {
+			log::error!("Response body is not valid UTF-8: {:?}", e);
 			http::Error::Unknown
 		})?;
-	
+
 		log::info!("Received response body: {}", body_str);
-	
-		let response_json: ResponseData = serde_json::from_str(body_str).map_err(|err| {
-			log::error!("Failed to parse JSON response: {}", err);
+
+		let response_json: ResponseData = serde_json::from_str(body_str).map_err(|e| {
+			log::error!("Failed to parse JSON response: {:?}", e);
 			http::Error::Unknown
 		})?;
-	
-		log::info!("Parsed JSON: {:?}", response_json);
-	
+
+		log::info!("Parsed JSON response: {:?}", response_json);
+
 		if !response_json.is_succ {
 			if let Some(err) = response_json.err {
 				log::error!("Error from server: {:?}", err);
@@ -518,8 +521,6 @@ impl<T: Config> Pallet<T> {
 			log::error!("Missing 'res' field in successful response");
 			http::Error::Unknown
 		})?;
-
-		log::info!("Babylon digest: {}, Time: {}", babylon_data.babylon_digest, babylon_data.time);
 
 		Ok((babylon_data.babylon_digest, babylon_data.time))
 	}
