@@ -37,3 +37,20 @@ persist state:
 ```sh
 ./target/release/cyferio-hub-node --dev --unsafe-rpc-external
 ```
+
+### Connect rollup to Cyferio Hub
+
+To connect a rollup to Cyferio Hub, you need to set up the rollup node and configure it to use Cyferio Hub as its router.
+
+1. Configure the rollup node to use Cyferio Hub as its router. Specifically, you need to set the feature flag `cyferio_da` to default in the rollup node's `Cargo.toml` file. Visit [Cyferio SDK](https://github.com/cyferio-labs/cyferio-sdk) for more details.
+
+```toml
+# cyferio-sdk/crates/rollup/Cargo.toml
+
+[features]
+default = ["cyferio_da", "risc0"]
+```
+
+2. Start the rollup node. (before starting the rollup node, make sure Cyferio Hub node is running)
+
+3. Observe the hub's logs to see if the transaction from the rollup node is successfully routed and processed. Check the details in our demo [here](https://youtu.be/KTOOw8Fgc0k).
